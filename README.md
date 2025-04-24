@@ -1,2 +1,2 @@
 # smart_feeder_app
-CSC452
+This app is for CSC452 subject
