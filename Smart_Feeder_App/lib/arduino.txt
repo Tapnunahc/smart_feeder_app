@@ -1,0 +1,130 @@
+#include <ESP8266WiFi.h>              // เชื่อม wifi
+#include <ESP8266WebServer.h>         // สร้าง server
+#include <ArduinoJson.h>              
+#include <time.h>                     // เวลา
+
+const char* ssid = "wifiname";
+const char* password = "passwifi";
+
+
+ESP8266WebServer server(80);
+
+#define MAX_FEEDING_TIMES 5                     
+String latestFeedingTimes[MAX_FEEDING_TIMES];  
+float latestFoodAmounts[MAX_FEEDING_TIMES];   
+int feedingCount = 0;                           
+String latestFeederName = "Feeder 1";          
+
+// ฟังก์ชันรับเวลาจากแอป
+void handleFeedSchedule() {
+  server.sendHeader("Access-Control-Allow-Origin", "*"); 
+
+  if (server.method() == HTTP_OPTIONS) {
+    server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+    server.send(204);  // ส่ง response code 204 (No Content)
+    return;
+  }
+
+  if (server.method() == HTTP_POST) {
+    String payload = server.arg("plain");
+    Serial.println("Received data: ");
+    Serial.println(payload);
+
+    DynamicJsonDocument doc(2048);
+    DeserializationError error = deserializeJson(doc, payload); //แปลง json
+
+    if (error) {
+      server.send(400, "application/json", "{\"error\":\"Invalid JSON format\"}");
+      return;
+    }
+
+    latestFeederName = doc["recipeName"].as<String>();
+    JsonArray times = doc["feedingTimes"];
+    JsonArray amounts = doc["foodAmounts"];
+
+// ฟังก์ชันเอาข้อมูลลงตัวแปร
+    feedingCount = min((int)times.size(), MAX_FEEDING_TIMES);
+    for (int i = 0; i < feedingCount; i++) {
+      latestFeedingTimes[i] = times[i].as<String>();
+      latestFoodAmounts[i] = amounts[i].as<float>();
+    }
+
+    DynamicJsonDocument responseDoc(512);
+    responseDoc["status"] = "success";
+    String response;
+    serializeJson(responseDoc, response);
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", response);
+    Serial.println("Feeding data received and stored.");
+  } else {
+    server.send(405, "application/json", "{\"error\":\"Invalid method\"}");
+  }
+}
+
+// ฟังก์ชันส่งประวัติการให้อาหาร
+void handleGetHistory() {
+  time_t now = time(nullptr);                            // timestamp
+  struct tm* timeinfo = localtime(&now);                 // แปลงเวลา
+  char currentDate[11];                                 
+  strftime(currentDate, sizeof(currentDate), "%Y-%m-%d", timeinfo);  // format วันที่
+
+  DynamicJsonDocument doc(2048);                         
+  JsonArray arr = doc.to<JsonArray>();
+
+  for (int i = 0; i < feedingCount; i++) {
+    JsonObject obj = arr.createNestedObject();           
+    obj["feederName"] = latestFeederName;                
+    obj["time"] = latestFeedingTimes[i];                 // เวลาให้อาหาร
+    obj["amount"] = latestFoodAmounts[i];                // ปริมาณอาหาร
+    obj["status"] = "Success";                           // status
+    obj["date"] = currentDate;                           // วันที่ปัจจุบัน
+  }
+
+  String response;
+  serializeJson(doc, response);                          // json to string
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", response);        // ส่งข้อมูลกลับ
+  Serial.println("History sent back.");
+}
+
+void setup() {
+  Serial.begin(115200);                    
+  WiFi.begin(ssid, password);             
+  Serial.print("Connecting to WiFi");
+
+  // รอจนเชื่อมเน็ตได้
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected");
+  Serial.println("IP address: " + WiFi.localIP().toString());  // โชว์ ip
+
+  // เวลา gmt+7
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("Waiting for NTP time sync...");
+  time_t now = time(nullptr);
+
+  // รอจนกว่าเวลาจะ sync เสร็จ
+  while (now < 8 * 3600 * 2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("\nTime synchronized");
+
+  // api
+  server.on("/feed", HTTP_ANY, handleFeedSchedule);   // รับข้อมูลการให้อาหาร
+  server.on("/history", HTTP_GET, handleGetHistory);  // ส่งประวัติการให้อาหาร
+
+  server.begin();  // เริ่ม web serv
+  Serial.println("Server started");
+}
+
+void loop() {
+  server.handleClient();
+}
+
+
